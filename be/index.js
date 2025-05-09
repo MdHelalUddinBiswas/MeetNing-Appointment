@@ -255,7 +255,7 @@ app.get('/api/appointments/:id', authenticateToken, async (req, res) => {
 });
 
 // Create a new appointment
-app.post('/api/appointments', async (req, res) => {
+app.post('/api/appointments', authenticateToken, async (req, res) => {
   console.log(req.body);
  
   try {
