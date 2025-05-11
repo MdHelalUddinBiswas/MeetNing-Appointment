@@ -3,6 +3,7 @@ const { Pool } = require('pg');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const cors = require('cors');
+const axios = require('axios');
 require('dotenv').config();
 
 const app = express();
@@ -474,6 +475,122 @@ app.get('/api/calendars', authenticateToken, async (req, res) => {
   } catch (error) {
     console.error('Get calendars error:', error);
     res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Create a Google Meet link
+app.post('/api/google-meet', async (req, res) => {
+  try {
+    const { accessToken, eventDetails } = req.body;
+    
+    if (!accessToken) {
+      return res.status(401).json({ error: 'No access token provided' });
+    }
+
+    // Log the received event details for debugging
+    console.log('Event details received:', JSON.stringify(eventDetails, null, 2));
+    
+    // Extract start and end times from the event details
+    // The frontend sends nested objects, handle both formats
+    let startDateTime, endDateTime, timeZone;
+    
+    if (eventDetails.start && eventDetails.start.dateTime) {
+      // Handle nested format from frontend
+      startDateTime = eventDetails.start.dateTime;
+      endDateTime = eventDetails.end?.dateTime;
+      timeZone = eventDetails.start.timeZone || 'UTC';
+    } else if (eventDetails.startTime) {
+      // Handle flat format
+      startDateTime = eventDetails.startTime;
+      endDateTime = eventDetails.endTime;
+      timeZone = eventDetails.timezone || 'UTC';
+    } else {
+      return res.status(400).json({ error: 'Missing start/end time information' });
+    }
+    
+    // Ensure we have valid ISO format dates for both start and end
+    if (!startDateTime || !endDateTime) {
+      return res.status(400).json({ error: 'Invalid start or end time' });
+    }
+    
+    // Get other event details
+    const summary = eventDetails.summary || eventDetails.title || 'New Meeting';
+    const description = eventDetails.description || 'Meeting created via MeetNing';
+    
+    // Extract attendees, handling different formats
+    let attendees = [];
+    if (eventDetails.attendees && Array.isArray(eventDetails.attendees)) {
+      attendees = eventDetails.attendees;
+    } else if (eventDetails.participants && Array.isArray(eventDetails.participants)) {
+      attendees = eventDetails.participants.map(email => ({ email }));
+    }
+    
+    console.log('Preparing to create event with:', {
+      summary,
+      startDateTime,
+      endDateTime,
+      timeZone,
+      attendees: attendees.length
+    });
+    
+    // Make request to Google Calendar API to create an event with conferencing
+    const response = await axios({
+      method: 'POST',
+      url: 'https://www.googleapis.com/calendar/v3/calendars/primary/events',
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+        'Content-Type': 'application/json'
+      },
+      data: {
+        summary,
+        description,
+        start: {
+          dateTime: startDateTime,
+          timeZone
+        },
+        end: {
+          dateTime: endDateTime,
+          timeZone
+        },
+        conferenceData: {
+          createRequest: {
+            requestId: `meeting-${Date.now()}`,
+            conferenceSolutionKey: {
+              type: 'hangoutsMeet'
+            }
+          }
+        },
+        attendees: attendees.length > 0 ? attendees : []
+      },
+      params: {
+        conferenceDataVersion: 1
+      }
+    });
+    
+    // Log response data for debugging
+    console.log('Google Calendar API response:', JSON.stringify(response.data, null, 2));
+
+    // Extract the Google Meet link
+    const meetLink = response.data.hangoutLink || 
+                    (response.data.conferenceData && 
+                     response.data.conferenceData.entryPoints && 
+                     response.data.conferenceData.entryPoints.find(e => e.uri).uri);
+
+    if (!meetLink) {
+      return res.status(400).json({ error: 'Failed to create Google Meet link' });
+    }
+
+    // Return the meet link
+    return res.status(200).json({ 
+      meetLink,
+      eventId: response.data.id
+    });
+  } catch (error) {
+    console.error('Google Meet creation error:', error.response ? error.response.data : error.message);
+    return res.status(500).json({ 
+      error: 'Failed to create Google Meet', 
+      details: error.response ? error.response.data : error.message 
+    });
   }
 });
 
